@@ -175,5 +175,70 @@ document.addEventListener('click',e=>{const page=e.target.closest('[data-page]')
 function applyWallpaper(){const image=state.settings.wallpaperData;if(image){$('heroBanner').style.backgroundImage='url("'+image.replace(/"/g,'')+'")'}else{$('heroBanner').style.backgroundImage=''} }$('wallpaperInput').addEventListener('change',e=>{const file=e.target.files[0];if(!file)return;if(!file.type.startsWith('image/'))return setStatus('backupStatus','File foto tidak valid.','error');if(file.size>3*1024*1024)return setStatus('backupStatus','Ukuran foto maksimal 3 MB.','error');const reader=new FileReader();reader.onload=()=>{state.settings.wallpaperData=reader.result;applyWallpaper();save();setStatus('backupStatus','Foto header berhasil disimpan di perangkat.','success')};reader.readAsDataURL(file)});
 load();document.documentElement.dataset.theme=state.settings.theme||'dark';$('themeToggle').textContent=state.settings.theme==='dark'?'☾':'☀';$('date').value=today();$('reportMonth').value=today().slice(0,7);$('budgetStart').value=today();$('budgetEnd').value=today();$('goalDeadline').value=today();const year=new Date().getFullYear();$('reportYear').innerHTML=Array.from({length:7},(_,i)=>`<option>${year-3+i}</option>`).join('');$('reportYear').value=String(year);applyWallpaper();renderAll();
 </script>
+
+<style>
+#cloudPanel{margin:16px 0;padding:16px;border:1px solid var(--border,#334155);border-radius:18px;background:var(--card,#111827)}
+#cloudPanel input{width:100%;box-sizing:border-box;margin:5px 0 8px;padding:10px;border-radius:10px;border:1px solid #64748b;background:transparent;color:inherit}
+.cloud-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}.cloud-status{font-size:13px;margin-top:8px}.cloud-ok{color:#22c55e}.cloud-warn{color:#f59e0b}.cloud-danger{color:#ef4444}
+</style>
+<section id="cloudPanel" aria-label="Database bersama">
+  <h3>☁️ Database Bersama</h3>
+  <p class="helper">Hubungkan COUPLE MONEY ke Firebase agar Rofat dan Abil memakai data yang sama secara realtime.</p>
+  <div class="cloud-grid">
+    <label>Firebase API Key<input id="fbApiKey" autocomplete="off"></label>
+    <label>Auth Domain<input id="fbAuthDomain" autocomplete="off" placeholder="project.firebaseapp.com"></label>
+    <label>Project ID<input id="fbProjectId" autocomplete="off"></label>
+    <label>Storage Bucket<input id="fbStorageBucket" autocomplete="off"></label>
+    <label>Messaging Sender ID<input id="fbMessagingSenderId" autocomplete="off"></label>
+    <label>App ID<input id="fbAppId" autocomplete="off"></label>
+  </div>
+  <div class="cloud-grid">
+    <label>Email Rofat/Abil<input id="fbLoginEmail" type="email" autocomplete="username" placeholder="email Firebase"></label>
+    <label>Password Firebase<input id="fbLoginPassword" type="password" autocomplete="current-password" placeholder="password akun Firebase"></label>
+  </div>
+  <div class="button-row">
+    <button class="btn btn-primary" id="fbConnect">Hubungkan database</button>
+    <button class="btn btn-secondary" id="fbSignIn">Masuk dengan Email</button>
+    <button class="btn btn-secondary" id="fbSignOut">Keluar</button>
+    <button class="btn btn-secondary" id="fbPush">Kirim data lama ke cloud</button>
+    <button class="btn btn-secondary" id="fbPull">Ambil data cloud</button>
+  </div>
+  <div id="cloudStatus" class="cloud-status cloud-warn">Status: belum terhubung. Aplikasi masih menggunakan penyimpanan lokal.</div>
+  <small class="helper">Gunakan Firebase Web App Config. Jangan memasukkan service account key atau private key di sini.</small>
+</section>
+<script type="module">
+import { initializeApp, getApps } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+
+const $c=id=>document.getElementById(id);
+let fbApp=null,fbAuth=null,fbDb=null,fbUser=null,fbUnsub=null,cloudReady=false,cloudHydrated=false,cloudWriting=false;
+const FBKEY='couple_money_firebase_config_v1';
+const WORKSPACE_ID='couple_money_shared';
+const cfgFields=['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'];
+function cloudMsg(text,kind='warn'){const el=$c('cloudStatus');if(el){el.textContent='Status: '+text;el.className='cloud-status cloud-'+kind}}
+function readCfg(){const out={};for(const k of cfgFields)out[k]=$c('fb'+k.charAt(0).toUpperCase()+k.slice(1)).value.trim();return out}
+function fillCfg(){try{const saved=JSON.parse(localStorage.getItem(FBKEY)||'{}');const defaults={apiKey:'AIzaSyD5t3hpXqIPW6wBDAeijaacEK5iO1j_RZ4',authDomain:'couple-money-8770a.firebaseapp.com',projectId:'couple-money-8770a',storageBucket:'couple-money-8770a.firebasestorage.app',messagingSenderId:'189673931615',appId:'1:189673931615:web:712b03716ac650b58e2cea'};for(const k of cfgFields){const el=$c('fb'+k.charAt(0).toUpperCase()+k.slice(1));if(el)el.value=saved[k]||defaults[k]||''}}catch(e){}}
+function currentPayload(){return {schemaVersion:SCHEMA,updatedAt:new Date().toISOString(),source:'couple-money',...state,transactions:state.transactions.map(t=>({...t,updatedAt:t.updatedAt||new Date().toISOString()}))}}
+async function connectFirebase(){
+ const cfg=readCfg(); if(cfgFields.some(k=>!cfg[k]))return cloudMsg('lengkapi semua konfigurasi Firebase.','danger');
+ localStorage.setItem(FBKEY,JSON.stringify(cfg));
+ try{
+   fbApp=getApps().length?getApps()[0]:initializeApp(cfg);fbAuth=getAuth(fbApp);fbDb=getFirestore(fbApp);cloudReady=true;
+   onAuthStateChanged(fbAuth,u=>{fbUser=u;if(u){cloudMsg('login sebagai '+(u.email||u.uid),'ok');startRealtime()}else cloudMsg('terhubung, tetapi belum login.','warn')});
+   cloudMsg('Firebase terhubung. Silakan login Google.','ok');
+ }catch(e){cloudReady=false;cloudMsg('gagal terhubung: '+e.message,'danger')}
+}
+async function loginEmail(){if(!fbAuth)return cloudMsg('hubungkan Firebase terlebih dahulu.','warn');const email=$c('fbLoginEmail').value.trim();const password=$c('fbLoginPassword').value;if(!email||!password)return cloudMsg('Isi email dan password Firebase terlebih dahulu.','danger');try{cloudMsg('sedang masuk...','warn');await signInWithEmailAndPassword(fbAuth,email,password);$c('fbLoginPassword').value='';}catch(e){cloudMsg('login gagal: '+friendlyAuthError(e),'danger')}}
+function friendlyAuthError(e){const code=e?.code||'';const map={'auth/invalid-credential':'Email atau password salah.','auth/invalid-login-credentials':'Email atau password salah.','auth/user-not-found':'Akun belum terdaftar di Firebase Authentication.','auth/wrong-password':'Password salah.','auth/too-many-requests':'Terlalu banyak percobaan. Tunggu sebentar lalu coba lagi.','auth/invalid-email':'Format email tidak valid.','auth/network-request-failed':'Jaringan bermasalah. Periksa internet.'};return map[code]||e?.message||'Kesalahan autentikasi.'}
+function workspaceRef(){if(!fbDb||!fbUser)return null;return doc(fbDb,'workspaces',WORKSPACE_ID)}
+async function pushCloud(){if(!fbUser)return cloudMsg('login terlebih dahulu.','warn');try{cloudWriting=true;await setDoc(workspaceRef(),{...currentPayload(),lastUpdatedBy:fbUser.uid,updatedAt:serverTimestamp()},{merge:false});cloudHydrated=true;cloudMsg('data lama berhasil dikirim ke database bersama.','ok')}catch(e){cloudMsg('pengiriman gagal: '+e.message,'danger')}finally{cloudWriting=false}}
+async function pullCloud(){if(!fbUser)return cloudMsg('login terlebih dahulu.','warn');try{const snap=await getDoc(workspaceRef());if(!snap.exists())return cloudMsg('belum ada data cloud. Kirim data lama terlebih dahulu.','warn');const remote=snap.data();if(!Array.isArray(remote.transactions))throw new Error('format data cloud tidak valid');state=migrate(remote);originalLocalSave();applyWallpaper();renderAll();cloudMsg('data cloud berhasil dimuat ke perangkat.','ok')}catch(e){cloudMsg('pengambilan gagal: '+e.message,'danger')}}
+function startRealtime(){if(fbUnsub)fbUnsub();cloudHydrated=false;fbUnsub=onSnapshot(workspaceRef(),async snap=>{if(!snap.exists()){cloudHydrated=true;cloudMsg('database bersama kosong. Tekan Kirim data lama jika ingin mengunggah data perangkat ini.','warn');return;}const remote=snap.data();if(!Array.isArray(remote.transactions))return;const incoming=migrate(remote);state=incoming;originalLocalSave();applyWallpaper();renderAll();cloudHydrated=true;cloudMsg('sinkronisasi realtime aktif.','ok')},err=>cloudMsg('sinkronisasi gagal: '+err.message,'danger'))}
+const originalLocalSave=window.save;
+window.save=function(){const ok=originalLocalSave();if(ok&&fbUser&&cloudHydrated&&!cloudWriting){cloudWriting=true;setDoc(workspaceRef(),{...currentPayload(),lastUpdatedBy:fbUser.uid,updatedAt:serverTimestamp()},{merge:false}).then(()=>cloudMsg('tersimpan dan tersinkron realtime.','ok')).catch(e=>cloudMsg('gagal menyimpan ke cloud: '+e.message,'danger')).finally(()=>{cloudWriting=false})}return ok}
+$c('fbConnect').addEventListener('click',connectFirebase);$c('fbSignIn').addEventListener('click',loginEmail);$c('fbSignOut').addEventListener('click',async()=>{if(fbAuth)await signOut(fbAuth)});$c('fbPush').addEventListener('click',pushCloud);$c('fbPull').addEventListener('click',pullCloud);fillCfg();connectFirebase();
+</script>
+
 </body>
 </html>
